@@ -23,3 +23,5 @@ go run main.go
 ```
 
 Then enter the feed url you want to insert into the db. 
+
+Note you can also use: "delete" to completely delete all data in firestore, or "rebuild" to delete and rebuild from all static feeds in main.go.

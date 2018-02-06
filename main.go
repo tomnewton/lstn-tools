@@ -449,6 +449,13 @@ func main() {
 
 	text := prompt(ctx)
 
+	if text == "delete" {
+		if err := deleteCollection(ctx, client, client.Collection("podcasts"), 500); err != nil {
+			panic(fmt.Errorf("error: couldn't delete podcasts collection, error: %s", err))
+		}
+		return
+	}
+
 	if text == "rebuild" {
 		if err := deleteCollection(ctx, client, client.Collection("podcasts"), 500); err != nil {
 			panic(fmt.Errorf("error: couldn't delete podcasts collection, error: %s", err))
