@@ -6,6 +6,8 @@ import (
 	"crypto/md5"
 	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"io"
 	"log"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -24,12 +27,73 @@ import (
 
 	"cloud.google.com/go/storage"
 	firebase "firebase.google.com/go"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
 
 var app *firebase.App
+
+var feeds = []string{
+	"http://feeds.gimletmedia.com/crimetownshow",
+	"http://feeds.gimletmedia.com/eltshow",
+	"http://feeds.gimletmedia.com/heavyweightpodcast",
+	"http://feeds.gimletmedia.com/hearstartup",
+	"http://feeds.gimletmedia.com/sciencevs",
+	"http://feeds.gimletmedia.com/hearreplyall",
+	"http://feeds.gimletmedia.com/mogulshow",
+	"http://feeds.gimletmedia.com/homecomingshow",
+	"http://feeds.gimletmedia.com/storypirates",
+	"http://feeds.gimletmedia.com/thenodshow",
+	"http://feeds.gimletmedia.com/thepitchshow",
+	"http://podcasts.files.bbci.co.uk/p05n1r2s.rss", // Radio1 & 1Xtra Stories
+	"http://podcasts.files.bbci.co.uk/p05nrmhm.rss", // BBC Womans Hour
+	"http://podcasts.files.bbci.co.uk/b006qptc.rss", // World at 1
+	"http://podcasts.files.bbci.co.uk/b00snr0w.rss", // infinite monkey cage
+	"http://podcasts.files.bbci.co.uk/b006qnx3.rss", // the food programme
+	"https://www.npr.org/rss/podcast.php?id=510289", // planet money
+	"https://www.npr.org/rss/podcast.php?id=510308", // hidden brain
+	"http://feed.thisamericanlife.org/talpodcast",   // this american life
+}
+
+func deleteCollection(ctx context.Context, client *firestore.Client,
+	ref *firestore.CollectionRef, batchSize int) error {
+
+	for {
+		// Get a batch of documents
+		iter := ref.Limit(batchSize).Documents(ctx)
+		numDeleted := 0
+
+		// Iterate through the documents, adding
+		// a delete operation for each one to a
+		// WriteBatch.
+		batch := client.Batch()
+		for {
+			doc, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				return err
+			}
+
+			batch.Delete(doc.Ref)
+			numDeleted++
+		}
+
+		// If there are no documents to delete,
+		// the process is over.
+		if numDeleted == 0 {
+			return nil
+		}
+
+		_, err := batch.Commit(ctx)
+		if err != nil {
+			return err
+		}
+	}
+}
 
 func podcastExistsInDB(ctx context.Context, client *firestore.Client, podcast *Podcast) (bool, error) {
 	doc, err := client.Collection("podcasts").Doc(podcast.ID).Get(ctx)
@@ -232,14 +296,14 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 
 	if !exists {
 		//Create the thumbnail images we need for the Podcast,
-		fmt.Println("Creating podcasts thumbnail image.")
+		fmt.Println("Creating podcasts thumbnail image from ", result.Podcast.ImageOriginal.URL)
 		img, _, err := resizeImageFromURL(result.Podcast.ImageOriginal.URL, uint(viper.Get("thumbnail-size").(int)))
 		if err != nil {
-			panic(fmt.Errorf("error resizing image"))
+			panic(fmt.Errorf("error resizing image %s", err))
 		}
 
 		//and stick them into CloudStorage.
-		projectID := viper.Get("google-cloud-project-id").(string)
+		//projectID := viper.Get("google-cloud-project-id").(string)
 		storageClient, err := storage.NewClient(ctx, option.WithCredentialsFile(viper.Get("service-account-path").(string)))
 		if err != nil {
 			panic(fmt.Errorf("error creating cloud storage client: %s", err))
@@ -251,9 +315,9 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 		aclrule := storage.ACLRule{Entity: storage.AllUsers, Role: storage.RoleReader}
 		attrs.ACL = append(attrs.ACL, aclrule)
 
-		if err := bkt.Create(ctx, projectID, &attrs); err != nil {
+		/*if err := bkt.Create(ctx, projectID, &attrs); err != nil {
 			panic(fmt.Errorf("error creating bucket: %s", err))
-		}
+		}*/
 
 		objName := fmt.Sprintf("%s.png", result.Podcast.ID)
 		obj := bkt.Object(objName)
@@ -318,8 +382,12 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 	}
 
 	//sometimes the email is blank, but is in the itunes:extensions.
-	if feed.Author.Email == "" {
-		feed.Author.Email = feed.ITunesExt.Owner.Email
+	if feed.Author != nil {
+		if feed.Author.Email == "" {
+			feed.Author.Email = feed.ITunesExt.Owner.Email
+		}
+	} else {
+		feed.Author = &gofeed.Person{Email: feed.ITunesExt.Owner.Email, Name: feed.ITunesExt.Owner.Name}
 	}
 
 	r := FeedResult{}
@@ -348,18 +416,12 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 	return &r, nil
 }
 
-func prompt(ctx context.Context) *FeedResult {
+func prompt(ctx context.Context) string {
 
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Enter Feed URL: ")
 	text, _ := reader.ReadString('\n')
-
-	result, err := loadRSSFeed(text)
-	if err != nil {
-		panic(fmt.Errorf("error: %s", err))
-	}
-
-	return result
+	return strings.TrimSpace(text)
 }
 
 func main() {
@@ -385,7 +447,27 @@ func main() {
 	}
 	defer client.Close()
 
-	result := prompt(ctx)
+	text := prompt(ctx)
 
-	insert(ctx, client, result)
+	fmt.Println("text: ", text)
+	if text == "rebuild" {
+		if err := deleteCollection(ctx, client, client.Collection("podcasts"), 500); err != nil {
+			panic(fmt.Errorf("error: couldn't delete podcasts collection, error: %s", err))
+		}
+
+		for _, feed := range feeds {
+			result, err := loadRSSFeed(feed)
+			if err != nil {
+				panic(fmt.Errorf("error: %s", err))
+			}
+			insert(ctx, client, result)
+		}
+	} else {
+		result, err := loadRSSFeed(text)
+		if err != nil {
+			panic(fmt.Errorf("error: %s", err))
+		}
+		insert(ctx, client, result)
+	}
+
 }
