@@ -1,1 +1,4 @@
 service-account-path: ../../Dropbox/lstnin/keys/lstn-in-dev-6a0a1fe3f18f.json
+google-cloud-project-id: lstn-in-dev
+cloud-storage-bucket-for-thumbnails: lstn-in-dev
+thumbnail-size: 300

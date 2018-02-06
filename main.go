@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,8 +19,10 @@ import (
 	"cloud.google.com/go/firestore"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/nfnt/resize"
 	"github.com/spf13/viper"
 
+	"cloud.google.com/go/storage"
 	firebase "firebase.google.com/go"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
@@ -188,6 +193,30 @@ type ITunesEpisodeExt struct {
 	Keywords string
 }
 
+func resizeImageFromURL(url string, size uint) (*image.Image, string, error) {
+	imgReadCloser, err := loadImage(url)
+	if err != nil {
+		return nil, "", err
+	}
+	img, format, err := image.Decode(io.Reader(imgReadCloser))
+	if err != nil {
+		return nil, "", err
+	}
+
+	thumb := resize.Thumbnail(size, size, img, resize.NearestNeighbor)
+
+	return &thumb, format, nil
+}
+
+func loadImage(url string) (io.ReadCloser, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
+}
+
 func insert(ctx context.Context, client *firestore.Client, result *FeedResult) error {
 
 	//check firestore to see if this podcast exists.
@@ -202,15 +231,65 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 	docRef := client.Collection("podcasts").Doc(result.Podcast.ID)
 
 	if !exists {
+		//Create the thumbnail images we need for the Podcast,
+		fmt.Println("Creating podcasts thumbnail image.")
+		img, _, err := resizeImageFromURL(result.Podcast.ImageOriginal.URL, uint(viper.Get("thumbnail-size").(int)))
+		if err != nil {
+			panic(fmt.Errorf("error resizing image"))
+		}
+
+		//and stick them into CloudStorage.
+		projectID := viper.Get("google-cloud-project-id").(string)
+		storageClient, err := storage.NewClient(ctx, option.WithCredentialsFile(viper.Get("service-account-path").(string)))
+		if err != nil {
+			panic(fmt.Errorf("error creating cloud storage client: %s", err))
+		}
+
+		bktName := viper.Get("cloud-storage-bucket-for-thumbnails").(string)
+		bkt := storageClient.Bucket(bktName)
+		attrs := storage.BucketAttrs{}
+		aclrule := storage.ACLRule{Entity: storage.AllUsers, Role: storage.RoleReader}
+		attrs.ACL = append(attrs.ACL, aclrule)
+
+		if err := bkt.Create(ctx, projectID, &attrs); err != nil {
+			panic(fmt.Errorf("error creating bucket: %s", err))
+		}
+
+		objName := fmt.Sprintf("%s.png", result.Podcast.ID)
+		obj := bkt.Object(objName)
+		w := obj.NewWriter(ctx)
+
+		fmt.Println("Writing thumbnail to Cloud Storage.")
+		if err := png.Encode(w, *img); err != nil {
+			panic(fmt.Errorf("error writing png: %s", err))
+		}
+
+		if err := w.Close(); err != nil {
+			panic(fmt.Errorf("error closing cloud storage object: %s", err))
+		}
+		if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+			panic(fmt.Errorf("error making image publicly viewable: %s", err))
+		}
+
+		thumbURL := fmt.Sprintf("%s%s/%s", "https://storage.cloud.google.com/", bktName, objName)
+		if _, err := url.Parse(thumbURL); err != nil {
+			panic(fmt.Errorf("error building url to thumbnail image"))
+		}
+
+		result.Podcast.ImageThumbnail.Title = result.Podcast.ImageOriginal.Title
+		result.Podcast.ImageThumbnail.URL = thumbURL
+
+		fmt.Println("Podcast thumbnail available: ", thumbURL)
+
 		//Create the Podcast document in podcasts collection.
-		_, err := docRef.Set(ctx, result.Podcast)
+		_, err = docRef.Set(ctx, result.Podcast)
 		if err != nil {
 			fmt.Println(fmt.Errorf("Couldn't create podcast document in db: %s", err))
 		}
 		fmt.Printf("Created new Podcast: %s by %s\n", result.Podcast.Title, result.Podcast.Author.Name)
 	}
 
-	//Batch write episodes
+	//Batch write episodes to firestore
 	batch := client.Batch()
 	i := 0
 	for _, ep := range result.Episodes {
@@ -221,7 +300,7 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 		}
 	}
 
-	fmt.Printf("Batch writing %d episodes...\n", len(result.Episodes))
+	fmt.Printf("Batch writing %d episodes to Firestore...\n", len(result.Episodes))
 	_, err = batch.Commit(ctx)
 	if err != nil {
 		return err
