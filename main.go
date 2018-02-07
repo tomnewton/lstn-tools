@@ -335,7 +335,7 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 			panic(fmt.Errorf("error making image publicly viewable: %s", err))
 		}
 
-		thumbURL := fmt.Sprintf("%s%s/%s", "https://storage.cloud.google.com/", bktName, objName)
+		thumbURL := fmt.Sprintf("%s%s/%s", "https://storage.googleapis.com/", bktName, objName)
 		if _, err := url.Parse(thumbURL); err != nil {
 			panic(fmt.Errorf("error building url to thumbnail image"))
 		}
