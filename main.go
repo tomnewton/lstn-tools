@@ -47,14 +47,27 @@ var feeds = []string{
 	"http://feeds.gimletmedia.com/storypirates",
 	"http://feeds.gimletmedia.com/thenodshow",
 	"http://feeds.gimletmedia.com/thepitchshow",
-	"http://podcasts.files.bbci.co.uk/p05n1r2s.rss", // Radio1 & 1Xtra Stories
-	"http://podcasts.files.bbci.co.uk/p05nrmhm.rss", // BBC Womans Hour
-	"http://podcasts.files.bbci.co.uk/b006qptc.rss", // World at 1
-	"http://podcasts.files.bbci.co.uk/b00snr0w.rss", // infinite monkey cage
-	"http://podcasts.files.bbci.co.uk/b006qnx3.rss", // the food programme
-	"https://www.npr.org/rss/podcast.php?id=510289", // planet money
-	"https://www.npr.org/rss/podcast.php?id=510308", // hidden brain
-	"http://feed.thisamericanlife.org/talpodcast",   // this american life
+	"http://podcasts.files.bbci.co.uk/p05n1r2s.rss",                   // Radio1 & 1Xtra Stories
+	"http://podcasts.files.bbci.co.uk/p05nrmhm.rss",                   // BBC Womans Hour
+	"http://podcasts.files.bbci.co.uk/b006qptc.rss",                   // World at 1
+	"http://podcasts.files.bbci.co.uk/b00snr0w.rss",                   // infinite monkey cage
+	"http://podcasts.files.bbci.co.uk/b006qnx3.rss",                   // the food programme
+	"https://www.npr.org/rss/podcast.php?id=510289",                   // planet money
+	"https://www.npr.org/rss/podcast.php?id=510308",                   // hidden brain
+	"http://feed.thisamericanlife.org/talpodcast",                     // this american life
+	"http://www.espn.com/espnradio/feeds/rss/podcast.xml?id=10672984", //ESPN FC
+	"http://www.espn.com/espnradio/feeds/rss/podcast.xml?id=2406595",  // Pardon The Interruption
+	"http://www.espn.com/espnradio/feeds/rss/podcast.xml?id=18339885", // The Adam Schefter Podcast
+	"http://www.espn.com/espnradio/feeds/rss/podcast.xml?id=2839445",  // Around the Horn
+	"http://www.espn.com/espnradio/feeds/rss/podcast.xml?id=14805210", // Around the Rim
+	"https://thefantasyfootballers.libsyn.com/fantasyfootball",        // The Fantasy Footballers
+	"http://feeds.feedburner.com/freakonomicsradio",
+	"http://feeds.wnyc.org/radiolab",
+	"http://feeds.wnyc.org/wnycheresthething",
+	"http://feeds.wnyc.org/newyorkerradiohour",
+	"http://feeds.soundcloud.com/users/soundcloud:users:62921190/sounds.rss", // a16z podcast,
+	"https://rss.simplecast.com/podcasts/3408/rss",                           // the kevin rose show
+	"https://rss.simplecast.com/podcasts/4267/rss",                           // Block Zero
 }
 
 func deleteCollection(ctx context.Context, client *firestore.Client,
@@ -131,6 +144,7 @@ type Podcast struct {
 	Author         *Author
 	Description    string
 	Link           string
+	FeedLink       string
 	ID             string
 	ImageOriginal  *Image
 	ImageThumbnail *Image
@@ -144,20 +158,25 @@ type Podcast struct {
 //NewPodcast - creates new Podcast
 func NewPodcast(feed *gofeed.Feed) *Podcast {
 
-	_, err := url.Parse(feed.Link)
+	if _, err := url.ParseRequestURI(feed.Link); err != nil {
+		panic(fmt.Errorf("error: feed.Link : %s", err))
+	}
 
-	_, err = url.Parse(feed.Image.URL)
+	if _, err := url.ParseRequestURI(feed.Image.URL); err != nil {
+		panic(fmt.Errorf("error: feed.Image.URL : %s", err))
+	}
 
-	if err != nil {
-		panic(fmt.Errorf("%s", err))
+	if _, err := url.ParseRequestURI(feed.FeedLink); err != nil {
+		panic(fmt.Errorf("error: feed.FeedLink : %s", err))
 	}
 
 	return &Podcast{
 		Title:          feed.Title,
 		Author:         &Author{Name: feed.Author.Name, Email: feed.Author.Email},
 		Description:    feed.Description,
+		FeedLink:       feed.FeedLink,
 		Link:           feed.Link,
-		ID:             md5hash(feed.Link),
+		ID:             md5hash(feed.FeedLink),
 		ImageOriginal:  &Image{Title: feed.Image.Title, URL: feed.Image.URL},
 		ImageThumbnail: &Image{},
 		Language:       feed.Language,
@@ -282,7 +301,6 @@ func loadImage(url string) (io.ReadCloser, error) {
 }
 
 func insert(ctx context.Context, client *firestore.Client, result *FeedResult) error {
-
 	//check firestore to see if this podcast exists.
 	exists, err := podcastExistsInDB(ctx, client, result.Podcast)
 	if err != nil {
@@ -381,9 +399,13 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 		return nil, err
 	}
 
+	if feed.FeedLink == "" {
+		feed.FeedLink = feedURL
+	}
+
 	//sometimes the email is blank, but is in the itunes:extensions.
 	if feed.Author != nil {
-		if feed.Author.Email == "" {
+		if feed.Author.Email == "" && feed.ITunesExt.Owner != nil {
 			feed.Author.Email = feed.ITunesExt.Owner.Email
 		}
 	} else {
@@ -410,14 +432,13 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 	}
 
 	//debug
-	//data, _ := json.MarshalIndent(r, "", "	")
+	//data, _ := json.MarshalIndent(r.Podcast, "", "	")
 	//fmt.Printf("%s\n", data)
 
 	return &r, nil
 }
 
 func prompt(ctx context.Context) string {
-
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Enter Feed URL: ")
 	text, _ := reader.ReadString('\n')
@@ -468,6 +489,28 @@ func main() {
 			}
 			insert(ctx, client, result)
 		}
+	} else if text == "new" {
+
+		for _, feed := range feeds {
+
+			fmt.Println("Checking for ", feed)
+			ref, err := client.Collection("podcasts").Doc(md5hash(feed)).Get(ctx)
+			if ref != nil {
+				// this one exists... keep going.
+				fmt.Println("Skipping ", feed)
+				continue
+			}
+			if err != nil && grpc.Code(err) != codes.NotFound {
+				panic(fmt.Errorf("error: %s", err))
+			}
+
+			result, err := loadRSSFeed(feed)
+			if err != nil {
+				panic(fmt.Errorf("error: %s", err))
+			}
+			insert(ctx, client, result)
+		}
+
 	} else {
 		result, err := loadRSSFeed(text)
 		if err != nil {
