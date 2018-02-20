@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"fmt"
@@ -195,10 +196,11 @@ type Author struct {
 type Image struct {
 	Title string
 	URL   string
+	Data  []byte
 }
 
 //NewEpisode - creates new Episode
-func NewEpisode(item *gofeed.Item) *Episode {
+func NewEpisode(item *gofeed.Item, podcastID string) *Episode {
 
 	_, err := url.Parse(item.Image.URL)
 	if err != nil {
@@ -231,6 +233,7 @@ func NewEpisode(item *gofeed.Item) *Episode {
 	}
 
 	return &Episode{
+		PodcastID:   podcastID,
 		ID:          md5hash(item.GUID),
 		Title:       item.Title,
 		Published:   item.PublishedParsed,
@@ -249,6 +252,7 @@ func NewEpisode(item *gofeed.Item) *Episode {
 
 //Episode - an episode of a podcast
 type Episode struct {
+	PodcastID        string
 	ID               string
 	Title            string
 	Published        *time.Time
@@ -333,10 +337,6 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 		aclrule := storage.ACLRule{Entity: storage.AllUsers, Role: storage.RoleReader}
 		attrs.ACL = append(attrs.ACL, aclrule)
 
-		/*if err := bkt.Create(ctx, projectID, &attrs); err != nil {
-			panic(fmt.Errorf("error creating bucket: %s", err))
-		}*/
-
 		objName := fmt.Sprintf("%s.png", result.Podcast.ID)
 		obj := bkt.Object(objName)
 		w := obj.NewWriter(ctx)
@@ -345,6 +345,13 @@ func insert(ctx context.Context, client *firestore.Client, result *FeedResult) e
 		if err := png.Encode(w, *img); err != nil {
 			panic(fmt.Errorf("error writing png: %s", err))
 		}
+
+		//Also write the data to the Podcast object.
+		buf := bytes.NewBuffer([]byte{})
+		if err := png.Encode(buf, *img); err != nil {
+			panic(fmt.Errorf("error writing thumb png to buffer: %s", err))
+		}
+		result.Podcast.ImageThumbnail.Data = buf.Bytes()
 
 		if err := w.Close(); err != nil {
 			panic(fmt.Errorf("error closing cloud storage object: %s", err))
@@ -428,7 +435,7 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 			item.Image = feed.Image
 		}
 
-		r.Episodes = append(r.Episodes, NewEpisode(item))
+		r.Episodes = append(r.Episodes, NewEpisode(item, r.Podcast.ID))
 	}
 
 	//debug
