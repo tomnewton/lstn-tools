@@ -196,7 +196,7 @@ type Author struct {
 type Image struct {
 	Title string
 	URL   string
-	Data  []byte
+	Data  []byte `firestore:",omitempty"`
 }
 
 //NewEpisode - creates new Episode
@@ -230,6 +230,22 @@ func NewEpisode(item *gofeed.Item, podcastID string) *Episode {
 		}
 
 		enclosures = append(enclosures, e)
+	}
+
+	if len(enclosures) == 0 || !strings.HasPrefix( enclosures[0].URL, "http") {
+		return nil
+	}
+
+	mediaURL, err := url.Parse(enclosures[0].URL)
+	if err != nil {
+		fmt.Errorf("issue with path of media enclosure: %s", err)
+		return nil
+	}
+
+	//currently we only support these file types.
+	if strings.HasSuffix(mediaURL.Path, ".mp3") == false &&
+		strings.HasSuffix(mediaURL.Path, ".m4a") == false {
+		return nil
 	}
 
 	return &Episode{
@@ -435,7 +451,10 @@ func loadRSSFeed(feedURL string) (*FeedResult, error) {
 			item.Image = feed.Image
 		}
 
-		r.Episodes = append(r.Episodes, NewEpisode(item, r.Podcast.ID))
+		ep := NewEpisode(item, r.Podcast.ID)
+		if ep != nil {
+			r.Episodes = append(r.Episodes, ep)
+		}
 	}
 
 	//debug
