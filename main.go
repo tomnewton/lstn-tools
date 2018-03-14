@@ -248,6 +248,9 @@ func NewEpisode(item *gofeed.Item, podcastID string) *Episode {
 		return nil
 	}
 
+	//clean the URLS... just the scheme host and path. get rid of fragments etc...
+	enclosures[0].URL = fmt.Sprintf("%s://%s%s", mediaURL.Scheme, mediaURL.Host, mediaURL.Path);
+
 	return &Episode{
 		PodcastID:   podcastID,
 		ID:          md5hash(item.GUID),
